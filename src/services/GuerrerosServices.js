@@ -22,4 +22,11 @@ const deleteAllGuerreros = () => {
     localStorage.removeItem(localKey);
 }
 
-export { createGuerrero, getGuerreros, deleteAllGuerreros };
+const removeGuerrero = (guerrero)=>{
+    const guerreros = getGuerreros();
+    const lista = guerreros.filter(g=> g.nombre != guerrero.nombre)
+    localStorage.setItem(localKey, JSON.stringify(lista));
+}
+
+
+export { createGuerrero, getGuerreros, deleteAllGuerreros, removeGuerrero };
