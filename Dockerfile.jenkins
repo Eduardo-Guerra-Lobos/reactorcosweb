@@ -1,0 +1,71 @@
+FROM alpine:3.19 AS builder
+RUN apk add --no-cache curl unzip tar
+WORKDIR /tmp
+ENV MAVEN_VERSION=3.9.16
+RUN curl -fsSL "https://downloads.apache.org/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" | \
+    tar -xzf - -C /opt/ && \
+    mv /opt/apache-maven-${MAVEN_VERSION} /opt/maven && \
+    find /opt/maven -name "*.md" -delete && \
+    find /opt/maven -name "*-sources.jar" -delete
+RUN curl -fsSL -o sonar.zip "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-8.0.1.6346.zip" && \
+    unzip -q sonar.zip -d /opt/ && \
+    mv /opt/sonar-scanner-8.0.1.6346 /opt/sonarscanner && \
+    rm sonar.zip && \
+    rm -rf /opt/sonarscanner/jre
+RUN VERSION=$(curl -s https://dependency-check.github.io/DependencyCheck/current.txt) && \
+ curl -Ls "https://github.com/dependency-check/DependencyCheck/releases/download/v$VERSION/dependency-check-$VERSION-release.zip" --output dependency-check.zip && \
+ unzip -q dependency-check.zip -d /opt/ && \
+ rm dependency-check.zip
+
+FROM jenkins/jenkins:2.568-slim-jdk21
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    gnupg2 \
+    binutils \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
+       $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends docker-ce-cli \
+    && curl -fsSL "https://raw.githubusercontent.com/tj/n/v10.1.0/bin/n" -o /usr/local/bin/n \
+    && chmod +x /usr/local/bin/n \
+    && n 16 \
+    && n 22 \
+    && find /usr/local/n/versions -name "node" -type f -exec strip --strip-unneeded {} \; \
+    && find /usr/local/n/versions -name "*.node" -type f -exec strip --strip-unneeded {} \; 2>/dev/null || true \
+    && strip --strip-unneeded /usr/bin/docker 2>/dev/null || true \
+    && find /usr/local/n/versions -name "share"  -type d -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/n/versions -name "include" -type d -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/n/versions -name "CHANGELOG*" -delete \
+    && find /usr/local/n/versions -name "LICENSE"    -delete \
+    && find /usr/local/n/versions -name "README*"    -delete \
+    && find /usr/local/n/versions -path "*/node_modules/npm/man"      -type d -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/n/versions -path "*/node_modules/npm/docs"     -type d -exec rm -rf {} + 2>/dev/null || true \
+    && find /usr/local/n/versions -path "*/node_modules/npm/html"     -type d -exec rm -rf {} + 2>/dev/null || true \
+    && apt-get purge -y gnupg2 binutils \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --link --from=builder /opt/maven /opt/maven
+COPY --link --from=builder /opt/sonarscanner /opt/sonarscanner
+COPY --link --from=builder /opt/dependency-check /opt/dependency-check
+
+RUN ln -s /opt/maven/bin/mvn /usr/local/bin/mvn \
+    && ln -s /opt/dependency-check/bin/dependency-check.sh /usr/local/bin/dependency-check \
+    && chmod +x /opt/sonarscanner/bin/sonar-scanner \
+    && chown -R jenkins:jenkins \
+        /opt/maven \
+        /opt/sonarscanner \
+        /opt/dependency-check \
+        /usr/local/n
+
+ENV MAVEN_HOME=/opt/maven \
+    PATH="/opt/sonarscanner/bin:/opt/maven/bin:/usr/local/n/bin:${PATH}" \
+    N_PREFIX=/usr/local/n \
+    SONAR_SCANNER_SKIP_JRE_PROVISIONING=true
+
+USER jenkins
